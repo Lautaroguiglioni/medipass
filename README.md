@@ -1,4 +1,4 @@
-📑 Ficha de Proyecto: MediPass
+📑 MediPass
 1. Información General
 Nombre del Proyecto: MediPass
 Tagline: "Tu salud sin fronteras, validada en la blockchain."
