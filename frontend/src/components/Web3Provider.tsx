@@ -33,7 +33,6 @@ export default function Web3Provider({ children }: { children: React.ReactNode }
             '--ck-body-color-muted': '#64748b',
           }}
           options={{
-            embedMode: false,
             initialChainId: 10143,
           }}
         >

@@ -1,505 +1,432 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useAccount, useReadContract, useWriteContract } from 'wagmi';
-import { dbService, PrescriptionMetadata } from '@/lib/supabase';
-import { CONTRACT_ADDRESS, CONTRACT_ABI, mockMonadLedger, OnChainPrescriptionState } from '@/config/contract';
+import { useAccount } from 'wagmi';
 import { useDevDrawer } from '@/lib/devContext';
-import { Pill, Search, ShieldCheck, ShieldAlert, CheckCircle2, Lock, XCircle, ArrowRight, Activity, Clock } from 'lucide-react';
+import { 
+  Pill, Search, ShieldCheck, CheckCircle2, AlertTriangle, AlertCircle, RefreshCw, ClipboardCheck, ShieldAlert 
+} from 'lucide-react';
 import confetti from 'canvas-confetti';
 
-export default function PharmacyPortal() {
-  const { isConnected, address } = useAccount();
-  const { writeContractAsync } = useWriteContract();
+interface Prescription {
+  tokenId: string;
+  patient: string;
+  doctor: string;
+  ipfsCID: string;
+  medicationName: string;
+  dosageMg: string;
+  refillsAllowed: number;
+  refillsUsed: number;
+  isActive: boolean;
+  isDispensed: boolean;
+  issuedAt: number;
+  expiresAt: number;
+  details?: {
+    patientName?: string;
+    dob?: string;
+    notes?: string;
+  };
+}
+
+function PharmacyPortalContent() {
+  const { address, isConnected } = useAccount();
   const { addLog } = useDevDrawer();
   const searchParams = useSearchParams();
 
-  // Search States
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<PrescriptionMetadata[]>([]);
-  const [searchType, setSearchType] = useState<'hash' | 'patientId'>('hash');
-  
-  // Active Inspection State
-  const [selectedPrescription, setSelectedPrescription] = useState<PrescriptionMetadata | null>(null);
-  const [onChainState, setOnChainState] = useState<OnChainPrescriptionState | null>(null);
-  
-  // UI Status
-  const [loading, setLoading] = useState(false);
-  const [redeeming, setRedeeming] = useState(false);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [successMsg, setSuccessMsg] = useState('');
+  // Roles state
+  const [isPharmacistRole, setIsPharmacistRole] = useState(false);
+  const [checkingRole, setCheckingRole] = useState(true);
+  const [registeringPharmacist, setRegisteringPharmacist] = useState(false);
 
-  // Proactive search trigger if hash is passed in query parameters (from the overview table)
+  // Search Prescription State
+  const [tokenIdInput, setTokenIdInput] = useState('');
+  const [prescription, setPrescription] = useState<Prescription | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [doctorVerifiedOnChain, setDoctorVerifiedOnChain] = useState<boolean | null>(null);
+
+  // Dispense State
+  const [dispensing, setDispensing] = useState(false);
+
+  // Auto-search if Token ID is in URL query
   useEffect(() => {
-    const hash = searchParams.get('hash');
-    if (hash) {
-      setSearchQuery(hash);
-      triggerAutoSearch(hash);
+    const urlTokenId = searchParams.get('id');
+    if (urlTokenId) {
+      setTokenIdInput(urlTokenId);
+      verifyPrescription(urlTokenId);
     }
   }, [searchParams]);
 
-  const triggerAutoSearch = async (hash: string) => {
-    setLoading(true);
-    setErrorMsg('');
-    setSuccessMsg('');
-    const startTime = performance.now();
+  useEffect(() => {
+    if (isConnected && address) {
+      checkRole();
+    } else {
+      setIsPharmacistRole(false);
+      setCheckingRole(false);
+    }
+  }, [isConnected, address]);
+
+  const checkRole = async () => {
+    if (!address) return;
+    setCheckingRole(true);
     try {
-      const metadata = await dbService.getPrescription(hash);
-      if (metadata) {
-        setSelectedPrescription(metadata);
-        await inspectOnChainState(metadata.hash, metadata, startTime);
-      } else {
-        await inspectOnChainState(hash, null, startTime);
+      const res = await fetch(`http://localhost:3001/api/roles/check/${address}`);
+      const data = await res.json();
+      if (res.ok) {
+        setIsPharmacistRole(data.roles.isPharmacist);
       }
-    } catch {
-      setErrorMsg('Error al buscar metadatos.');
+    } catch (err) {
+      console.error(err);
     } finally {
-      setLoading(false);
+      setCheckingRole(false);
     }
   };
 
-  // Handle Search Query
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!searchQuery.trim()) return;
+  const handleRegisterPharmacist = async () => {
+    if (!address) return;
+    setRegisteringPharmacist(true);
+    const startTime = performance.now();
+    try {
+      const res = await fetch('http://localhost:3001/api/roles/grant/pharmacist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account: address }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        confetti({ particleCount: 100, colors: ['#f59e0b', '#06b6d4', '#ffffff'] });
+        addLog({
+          title: `Registered Pharmacy Credentials on Monad ⛓️`,
+          type: 'emit',
+          onChainHash: data.txHash,
+          executionTimeMs: Math.round(performance.now() - startTime),
+          privateMetadata: { address, message: data.message }
+        });
+        await checkRole();
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setRegisteringPharmacist(false);
+    }
+  };
 
-    setLoading(true);
-    setErrorMsg('');
-    setSuccessMsg('');
-    setSelectedPrescription(null);
-    setOnChainState(null);
-    setSearchResults([]);
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (tokenIdInput.trim()) {
+      verifyPrescription(tokenIdInput.trim());
+    }
+  };
+
+  const verifyPrescription = async (id: string) => {
+    setSearching(true);
+    setSearched(true);
+    setPrescription(null);
+    setDoctorVerifiedOnChain(null);
 
     const startTime = performance.now();
-    const query = searchQuery.trim().toLowerCase();
 
     try {
-      if (query.startsWith('0x') && query.length === 66) {
-        setSearchType('hash');
-        const metadata = await dbService.getPrescription(query);
-        
-        if (metadata) {
-          setSelectedPrescription(metadata);
-          await inspectOnChainState(metadata.hash, metadata, startTime);
-        } else {
-          await inspectOnChainState(query, null, startTime);
-        }
-      } else {
-        setSearchType('patientId');
-        const list = await dbService.getPrescriptionsByPatient(query);
-        setSearchResults(list);
-        
-        if (list.length === 0) {
-          setErrorMsg('No se encontraron recetas vigentes para el ID de Paciente provisto.');
+      // 1. Fetch prescription details from on-chain via backend
+      const res = await fetch(`http://localhost:3001/api/prescriptions/${id}`);
+      const data = await res.json();
+
+      if (res.ok && data.prescription) {
+        const rx: Prescription = data.prescription;
+
+        // 2. Fetch encrypted patient metadata from IPFS
+        try {
+          const ipfsRes = await fetch(`http://localhost:3001/api/ipfs/fetch/${rx.ipfsCID}`);
+          const ipfsData = await ipfsRes.json();
+          if (ipfsRes.ok) {
+            rx.details = ipfsData.data;
+          }
+        } catch (err) {
+          console.warn('Failed to fetch IPFS details:', err);
         }
 
-        const executionTimeMs = Math.round(performance.now() - startTime);
+        // 3. Verify on-chain status of the issuing Doctor
+        const doctorRoleRes = await fetch(`http://localhost:3001/api/roles/check/${rx.doctor}`);
+        const doctorRoleData = await doctorRoleRes.json();
+        if (doctorRoleRes.ok) {
+          setDoctorVerifiedOnChain(doctorRoleData.roles.isDoctor);
+        }
+
+        setPrescription(rx);
         addLog({
-          title: `Búsqueda ERP Paciente: ${query} 🔍`,
+          title: `Pharmacist verified Prescription #${id} on-chain 📁`,
           type: 'read',
           onChainHash: 'N/A',
-          executionTimeMs,
-          privateMetadata: {
-            searchQuery: query,
-            resultsFound: list.length,
-            provider: 'EHR Database Resolver'
-          }
+          executionTimeMs: Math.round(performance.now() - startTime),
+          privateMetadata: { tokenId: id, doctor: rx.doctor }
         });
       }
-    } catch (err: any) {
-      console.error(err);
-      setErrorMsg('Error al resolver la búsqueda clínica.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Inspect on-chain Monad state of a specific hash
-  const inspectOnChainState = async (hash: string, metadata: PrescriptionMetadata | null, inspectStartTime?: number) => {
-    const startTime = inspectStartTime || performance.now();
-    const cleanHash = hash.toLowerCase();
-
-    try {
-      let isRegistered = false;
-      let isRedeemed = false;
-      let doctor = '0x0000000000000000000000000000000000000000';
-      let timestamp = 0;
-
-      const ledgerState = await mockMonadLedger.getPrescription(cleanHash);
-      
-      if (ledgerState) {
-        isRegistered = ledgerState.isValid;
-        isRedeemed = ledgerState.isRedeemed;
-        doctor = ledgerState.doctor;
-        timestamp = ledgerState.timestamp;
-      }
-
-      const chainState: OnChainPrescriptionState = {
-        hash: cleanHash,
-        isValid: isRegistered,
-        isRedeemed,
-        doctor,
-        timestamp,
-        blockNumber: ledgerState?.blockNumber || 10245020,
-      };
-
-      setOnChainState(chainState);
-
-      const executionTimeMs = Math.round(performance.now() - startTime);
-      
-      addLog({
-        title: `Verificación Trazabilidad Hash ⚡`,
-        type: 'read',
-        onChainHash: cleanHash,
-        executionTimeMs,
-        blockNumber: chainState.blockNumber,
-        privateMetadata: {
-          patientName: metadata?.patientName || 'Desconocido',
-          integrityVerification: isRegistered ? 'Superada (Firma Válida)' : 'Fallo de Registro',
-          currentLedgerStatus: isRedeemed ? 'CANJEADA/DESPACHADA' : isRegistered ? 'ACTIVA/VIGENTE' : 'INVÁLIDA'
-        }
-      });
-
     } catch (err) {
-      console.error('Failed to read contract', err);
-      setErrorMsg('Error al consultar el libro de integridad digital.');
+      console.error(err);
+    } finally {
+      setSearching(false);
     }
   };
 
-  // Trigger Prescription Redemption
-  const handleRedeem = async () => {
-    if (!selectedPrescription && !onChainState) return;
-
-    const hash = selectedPrescription?.hash || onChainState?.hash;
-    if (!hash) return;
-
-    setRedeeming(true);
-    setErrorMsg('');
-    setSuccessMsg('');
-
+  const handleDispense = async () => {
+    if (!prescription) return;
+    setDispensing(true);
     const startTime = performance.now();
-    const cleanHash = hash.toLowerCase();
 
     try {
-      let txHash = '';
-      let blockNumber = 0;
-
-      if (isConnected && address) {
-        try {
-          txHash = await writeContractAsync({
-            address: CONTRACT_ADDRESS,
-            abi: CONTRACT_ABI,
-            functionName: 'redeemPrescription',
-            args: [cleanHash as `0x${string}`],
-            chainId: 10143,
-            gasPrice: 52000000000n, // 52 gwei hardcode for operational efficiency
-          });
-          blockNumber = Math.floor(10246000 + Math.random() * 100);
-        } catch (err: any) {
-          console.warn('On-chain transaction failed, executing simulated dispense registry fallback.', err);
-          txHash = await mockMonadLedger.redeemPrescription(cleanHash);
-        }
-      } else {
-        txHash = await mockMonadLedger.redeemDispenseRegistry(cleanHash);
-      }
-
-      blockNumber = blockNumber || Math.floor(10246100 + Math.random() * 100);
-      const executionTimeMs = Math.round(performance.now() - startTime);
-
-      addLog({
-        title: 'Despacho Registrado en Ledger 💊',
-        type: 'redeem',
-        onChainHash: cleanHash,
-        txHash,
-        gasUsed: '38,940 units',
-        executionTimeMs,
-        blockNumber,
-        privateMetadata: {
-          patientName: selectedPrescription?.patientName || 'Desconocido',
-          medication: selectedPrescription?.medication || 'Desconocido',
-          auditStatus: 'Completado y Despachado'
-        }
+      const res = await fetch(`http://localhost:3001/api/prescriptions/${prescription.tokenId}/dispense`, {
+        method: 'POST',
       });
+      const data = await res.json();
 
-      if (onChainState) {
-        setOnChainState({
-          ...onChainState,
-          isRedeemed: true,
+      if (res.ok) {
+        confetti({ particleCount: 120, colors: ['#10b981', '#ffffff'] });
+        addLog({
+          title: `Dispensed Prescription #${prescription.tokenId} on-chain ⛓️`,
+          type: 'redeem',
+          onChainHash: data.txHash,
+          executionTimeMs: Math.round(performance.now() - startTime),
+          privateMetadata: { tokenId: prescription.tokenId }
         });
+
+        // Reload prescription details
+        await verifyPrescription(prescription.tokenId);
+      } else {
+        alert(`Dispensation failed: ${data.message || 'Verification Error'}`);
       }
-
-      setSuccessMsg('Despacho de medicamentos registrado oficialmente. Receta inhabilitada para futuros usos.');
-      
-      confetti({
-        particleCount: 20,
-        spread: 30,
-        colors: ['#1e40af', '#64748b'],
-      });
-
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      setErrorMsg(err.message || 'Error al registrar el despacho.');
     } finally {
-      setRedeeming(false);
+      setDispensing(false);
     }
   };
 
-  const selectPrescriptionFromList = async (metadata: PrescriptionMetadata) => {
-    setSelectedPrescription(metadata);
-    setLoading(true);
-    await inspectOnChainState(metadata.hash, metadata);
-    setLoading(false);
-  };
-
-  // Helper extension for simulated ledger support
-  const mockMonadLedgerExtended = mockMonadLedger as any;
-  if (!mockMonadLedgerExtended.redeemDispenseRegistry) {
-    mockMonadLedgerExtended.redeemDispenseRegistry = mockMonadLedgerExtended.redeemPrescription;
+  if (!isConnected) {
+    return (
+      <div className="flex flex-col items-center justify-center p-12 text-center space-y-4 glass-panel max-w-md mx-auto my-12">
+        <ShieldAlert size={48} className="text-amber-500 animate-pulse" />
+        <h2 className="text-xl font-bold text-white">Wallet Connection Required</h2>
+        <p className="text-xs text-slate-400">
+          Please connect your MetaMask wallet to access the Pharmacy verification dashboard.
+        </p>
+      </div>
+    );
   }
 
+  if (checkingRole) {
+    return (
+      <div className="text-center py-12">
+        <div className="animate-spin inline-block rounded-full h-8 w-8 border-4 border-[#06b6d4] border-t-transparent mb-4"></div>
+        <p className="text-xs text-slate-400 font-medium">Verifying Pharmacy credentials on Monad Testnet...</p>
+      </div>
+    );
+  }
+
+  if (!isPharmacistRole) {
+    return (
+      <div className="flex flex-col items-center justify-center p-12 text-center space-y-5 glass-panel max-w-lg mx-auto my-12 border-2 border-amber-500/20 bg-amber-500/5">
+        <Pill size={48} className="text-amber-500" />
+        <div>
+          <h2 className="text-xl font-bold text-white">Pharmacy Dispensation Credentials Required</h2>
+          <p className="text-xs text-slate-400 mt-2 leading-relaxed">
+            Your wallet address (`{address}`) is not registered as an authorized pharmacy on the blockchain. 
+            For the demo, you can activate pharmacy mode below to grant your wallet dispensation rights.
+          </p>
+        </div>
+        <button 
+          onClick={handleRegisterPharmacist} 
+          disabled={registeringPharmacist}
+          className="glass-button-primary w-full text-xs font-bold bg-gradient-to-r from-amber-500 to-amber-600 shadow-[0_4px_14px_rgba(245,158,11,0.3)]"
+        >
+          {registeringPharmacist ? 'Activating Pharmacy Credentials...' : 'Activate Pharmacy Mode'}
+        </button>
+      </div>
+    );
+  }
+
+  const isExpired = prescription ? (prescription.expiresAt < Math.floor(Date.now() / 1000)) : false;
+  const noRefillsLeft = prescription ? (prescription.isDispensed && prescription.refillsUsed >= prescription.refillsAllowed) : false;
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       
       {/* Title */}
-      <div className="border-b border-slate-200 pb-4">
-        <h2 className="text-base font-bold text-slate-900 uppercase tracking-tight flex items-center gap-2">
-          <Pill size={16} className="text-blue-800" />
-          <span>Módulo de Dispensación y Farmacia</span>
+      <div className="border-b border-white/5 pb-4">
+        <h2 className="text-base font-extrabold text-white uppercase tracking-wider flex items-center gap-2">
+          <Pill size={16} className="text-[#06b6d4]" />
+          <span>Pharmacy Dispensation & Verification Portal</span>
         </h2>
-        <p className="text-xs text-slate-500">
-          Interfaz oficial para farmacias de hospital para la validación y registro de despacho de medicamentos.
+        <p className="text-xs text-slate-400">
+          Verify digital doctor signatures, patient information, and dispense soulbound medication tokens on the Monad blockchain.
         </p>
       </div>
 
-      {/* Main Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+      {/* Verify Prescription Form */}
+      <div className="glass-panel p-5 max-w-xl mx-auto space-y-4">
+        <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#06b6d4] flex items-center gap-1.5">
+          <Search size={14} />
+          <span>Scan or Enter Prescription ID</span>
+        </h3>
         
-        {/* Left Column: Search Bar & Patient List */}
-        <div className="lg:col-span-5 space-y-5">
-          <div className="bg-white border border-slate-250 rounded p-4 shadow-sm">
-            <form onSubmit={handleSearch} className="space-y-3">
-              <label className="block text-[10px] font-bold text-slate-650 uppercase tracking-wider">
-                Buscador de Recetas (ERP)
-              </label>
-              
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  required
-                  placeholder="Ingrese Hash (0x...) o ID de Paciente"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="ehr-input font-mono flex-1"
-                />
-                
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="ehr-btn-primary py-1 px-4 text-[10px]"
-                >
-                  {loading ? 'Buscando...' : 'Buscar'}
-                </button>
+        <form onSubmit={handleSearchSubmit} className="flex gap-2">
+          <input 
+            type="number" 
+            value={tokenIdInput}
+            onChange={(e) => setTokenIdInput(e.target.value)}
+            className="glass-input flex-1 text-xs" 
+            placeholder="Enter prescription Token ID (e.g. 1)" 
+            min="1"
+            required
+          />
+          <button 
+            type="submit" 
+            disabled={searching}
+            className="glass-button-primary py-2 text-xs font-bold flex items-center gap-1"
+          >
+            {searching ? 'Verifying...' : 'Verify Signature'}
+          </button>
+        </form>
+      </div>
+
+      {searched && !searching && !prescription && (
+        <div className="flex flex-col items-center justify-center p-8 glass-panel max-w-md mx-auto text-center space-y-2 border-2 border-red-500/20 bg-red-500/5">
+          <AlertCircle size={24} className="text-red-500" />
+          <h4 className="font-bold text-white text-sm">Prescription Not Found</h4>
+          <p className="text-xs text-slate-450 leading-relaxed">
+            Prescription Token #{tokenIdInput} could not be resolved. Either the token has not been minted, or the contract addresses are misconfigured.
+          </p>
+        </div>
+      )}
+
+      {prescription && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
+          
+          {/* Left Column: Rx Details */}
+          <div className="glass-panel p-6 space-y-5">
+            <div className="flex items-center justify-between border-b border-white/5 pb-3">
+              <span className="text-[10px] font-bold text-[#06b6d4] font-mono uppercase tracking-wider">Verification Summary</span>
+              <span className="text-[10px] text-slate-400 font-mono">Token ID: #{prescription.tokenId}</span>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              <div>
+                <span className="text-[10px] text-slate-450 font-bold uppercase block mb-0.5">Medication</span>
+                <p className="text-base font-bold text-white">{prescription.medicationName}</p>
+                <p className="text-slate-400">Dosage: {prescription.dosageMg}mg</p>
               </div>
 
-              <span className="block text-[9px] text-slate-400 leading-normal">
-                Ingrese el ID del Paciente (e.g. `juanperez` o `marialopez`) o pegue el Hash de validación completo.
-              </span>
-            </form>
+              {prescription.details && (
+                <div className="grid grid-cols-2 gap-4 bg-slate-950/20 p-3 rounded-lg border border-white/5">
+                  <div>
+                    <span className="text-[9px] text-slate-500 font-bold uppercase block">Patient Name</span>
+                    <p className="font-bold text-white text-xs">{prescription.details.patientName || 'N/A'}</p>
+                  </div>
+                  <div>
+                    <span className="text-[9px] text-slate-500 font-bold uppercase block">Date of Birth</span>
+                    <p className="font-bold text-white text-xs">
+                      {prescription.details.dob ? new Date(prescription.details.dob).toLocaleDateString() : 'N/A'}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <span className="text-[10px] text-slate-450 font-bold uppercase block mb-0.5">Refills Remaining</span>
+                  <p className="text-sm font-extrabold text-white">
+                    {prescription.refillsAllowed - prescription.refillsUsed} / {prescription.refillsAllowed}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-450 font-bold uppercase block mb-0.5">Expiry Date</span>
+                  <p className="text-sm font-bold text-white">
+                    {new Date(prescription.expiresAt * 1000).toLocaleDateString()}
+                  </p>
+                </div>
+              </div>
+
+              <div className="border-t border-white/5 pt-3 space-y-2">
+                <span className="text-[10px] text-slate-450 font-bold uppercase block">On-Chain Cryptographic Pointers</span>
+                <p className="text-[8px] text-slate-500 font-mono truncate">Patient: {prescription.patient}</p>
+                <p className="text-[8px] text-slate-500 font-mono truncate">CID: {prescription.ipfsCID}</p>
+              </div>
+            </div>
           </div>
 
-          {/* Search Results list for Patient ID search */}
-          {searchResults.length > 0 && (
-            <div className="bg-white border border-slate-250 rounded p-4 shadow-sm space-y-3">
-              <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-100 pb-1.5">
-                Resultados Asistenciales ({searchResults.length})
-              </span>
-              
-              <div className="divide-y divide-slate-100 max-h-[220px] overflow-y-auto pr-1">
-                {searchResults.map((item, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => selectPrescriptionFromList(item)}
-                    className="w-full text-left py-2.5 flex items-center justify-between group hover:bg-slate-50 rounded px-2"
-                  >
-                    <div className="flex flex-col gap-0.5">
-                      <strong className="text-xs text-slate-800 group-hover:text-blue-800">
-                        {item.medication}
-                      </strong>
-                      <span className="text-[8px] font-mono text-slate-400">
-                        HASH: {item.hash.substring(0, 10)}...{item.hash.substring(58)}
-                      </span>
-                    </div>
-                    <ArrowRight size={12} className="text-slate-400 group-hover:translate-x-0.5 transition-transform" />
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+          {/* Right Column: Signature Verification & Dispense Button */}
+          <div className="glass-panel p-6 space-y-6">
+            <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#06b6d4] flex items-center gap-1.5 border-b border-white/5 pb-2">
+              <ClipboardCheck size={14} />
+              <span>Doctor Signature Integrity Check</span>
+            </h3>
 
-          {errorMsg && (
-            <div className="flex gap-2.5 p-3 rounded bg-red-50 border border-red-150 text-[10px] text-red-800">
-              <XCircle size={14} className="flex-shrink-0 mt-0.5" />
-              <span>{errorMsg}</span>
-            </div>
-          )}
-        </div>
-
-        {/* Right Column: Dynamic Validation Card */}
-        <div className="lg:col-span-7">
-          {loading ? (
-            <div className="bg-white border border-slate-250 rounded p-12 text-center flex flex-col items-center justify-center">
-              <div className="animate-spin rounded-full h-6 w-6 border-2 border-slate-400 border-t-transparent mb-3"></div>
-              <span className="text-xs text-slate-500 font-medium">
-                Consultando bases de datos y registros criptográficos...
-              </span>
-            </div>
-          ) : selectedPrescription || onChainState ? (
-            <div className="bg-white border border-slate-250 rounded p-5 shadow-sm space-y-5">
-              
-              {/* Validation Flat Banners */}
-              {onChainState?.isRedeemed ? (
-                /* REDEEMED / CANJEADA */
-                <div className="p-3.5 bg-slate-100 border border-slate-300 rounded flex items-start gap-3">
-                  <div className="h-8 w-8 rounded bg-slate-200 border border-slate-300 flex items-center justify-center text-slate-600 flex-shrink-0 mt-0.5">
-                    <Lock size={16} />
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                      RECETA YA DESPACHADA
-                    </h4>
-                    <p className="text-[10px] text-slate-500 leading-normal mt-0.5">
-                      Los medicamentos ya fueron entregados. Credencial inactiva para prevenir dispensaciones múltiples o fraudulencias de stock.
-                    </p>
-                  </div>
+            <div className="space-y-4">
+              {/* Doctor Status Badge */}
+              <div className="border border-white/5 bg-slate-950/20 p-4 rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-white">Signature Status</span>
+                  {doctorVerifiedOnChain ? (
+                    <span className="badge-emerald">AUTHENTIC</span>
+                  ) : (
+                    <span className="badge-amber">UNVERIFIED LICENSE</span>
+                  )}
                 </div>
-              ) : onChainState?.isValid ? (
-                /* VALID / ACTIVA */
-                <div className="p-3.5 bg-emerald-50 border border-emerald-300 rounded flex items-start gap-3">
-                  <div className="h-8 w-8 rounded bg-emerald-100 border border-emerald-200 flex items-center justify-center text-emerald-800 flex-shrink-0 mt-0.5">
-                    <ShieldCheck size={16} />
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-emerald-950 uppercase tracking-wider">
-                      PRESCRIPCIÓN VIGENTE / ENTREGA AUTORIZADA
-                    </h4>
-                    <p className="text-[10px] text-emerald-700 leading-normal mt-0.5">
-                      La firma digital es válida y el hash de integridad está verificado. Apta para el suministro de medicamentos de farmacia.
+
+                <div className="text-xs space-y-1 text-slate-400 leading-normal">
+                  <p>Issuing Address: <span className="font-mono text-white text-[10px] block truncate">{prescription.doctor}</span></p>
+                  
+                  {doctorVerifiedOnChain ? (
+                    <p className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1 pt-1 select-none">
+                      <CheckCircle2 size={12} />
+                      <span>This doctor holds a verified medical license role on the Monad blockchain.</span>
                     </p>
-                  </div>
+                  ) : (
+                    <p className="text-[10px] text-amber-500 font-semibold flex items-center gap-1 pt-1">
+                      <AlertTriangle size={12} />
+                      <span>WARNING: This signature cannot be authenticated. The issuing address does not have DOCTOR_ROLE.</span>
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Action Button */}
+              {isExpired ? (
+                <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-xl text-center text-xs text-red-400 space-y-1">
+                  <AlertCircle size={20} className="mx-auto" />
+                  <p className="font-bold">Prescription Expired</p>
+                  <p className="text-[10px] text-slate-500">The expiration date for this medication token has passed.</p>
+                </div>
+              ) : noRefillsLeft ? (
+                <div className="bg-amber-500/10 border border-amber-500/20 p-4 rounded-xl text-center text-xs text-amber-400 space-y-1">
+                  <AlertCircle size={20} className="mx-auto" />
+                  <p className="font-bold">No Refills Remaining</p>
+                  <p className="text-[10px] text-slate-500">This prescription has been fully dispensed.</p>
                 </div>
               ) : (
-                /* INVALID / NOT REGISTERED */
-                <div className="p-3.5 bg-red-50 border border-red-250 rounded flex items-start gap-3">
-                  <div className="h-8 w-8 rounded bg-red-100 border border-red-200 flex items-center justify-center text-red-800 flex-shrink-0 mt-0.5">
-                    <ShieldAlert size={16} />
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-red-950 uppercase tracking-wider">
-                      CREDENCIAL NO REGISTRADA ON-CHAIN
-                    </h4>
-                    <p className="text-[10px] text-red-700 leading-normal mt-0.5">
-                      El hash de validación ingresado no se encuentra en el registro de firmas profesionales. Entrega retenida.
-                    </p>
-                  </div>
-                </div>
+                <button 
+                  onClick={handleDispense}
+                  disabled={dispensing || !doctorVerifiedOnChain}
+                  className="glass-button-primary w-full py-3 text-xs font-bold text-center flex items-center justify-center gap-1.5"
+                >
+                  <ShieldCheck size={14} />
+                  <span>{dispensing ? 'Recording Dispensation...' : 'Dispense Medication'}</span>
+                </button>
               )}
-
-              {/* Prescription Private Metadata Fields */}
-              <div className="space-y-3">
-                <span className="block text-[10px] font-bold text-slate-450 uppercase tracking-wider border-b border-slate-100 pb-1">
-                  Metadatos de Prescripción (EHR)
-                </span>
-                
-                {selectedPrescription ? (
-                  <div className="grid grid-cols-2 gap-y-3 text-xs border border-slate-200 p-3 rounded bg-slate-50">
-                    <div>
-                      <span className="text-slate-450 block text-[9px] font-bold uppercase">PACIENTE</span>
-                      <strong className="text-slate-800">{selectedPrescription.patientName}</strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-450 block text-[9px] font-bold uppercase">ID PACIENTE</span>
-                      <strong className="text-slate-800 font-mono">{selectedPrescription.patientId}</strong>
-                    </div>
-                    <div className="col-span-2 pt-2 border-t border-slate-200/50">
-                      <span className="text-slate-450 block text-[9px] font-bold uppercase">MEDICAMENTO PRESCRIPTO</span>
-                      <strong className="text-slate-900 text-xs block">{selectedPrescription.medication}</strong>
-                    </div>
-                    <div className="col-span-2">
-                      <span className="text-slate-450 block text-[9px] font-bold uppercase">DOSIS E INSTRUCCIONES</span>
-                      <p className="text-slate-700 italic font-medium leading-normal mt-0.5">
-                        {selectedPrescription.dosage}. {selectedPrescription.instructions || 'Sin indicaciones.'}
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-[10px] text-slate-400 italic p-3 bg-slate-50 border border-slate-200 rounded text-center">
-                    Datos personales no registrados en la base de datos local de este hospital. La receta on-chain es anónima.
-                  </div>
-                )}
-              </div>
-
-              {/* Blockchain Telemetry details */}
-              <div className="space-y-2.5 pt-2 border-t border-slate-100">
-                <span className="block text-[10px] font-bold text-slate-450 uppercase tracking-wider">
-                  Verificación de Integridad Digital
-                </span>
-                
-                <div className="bg-[#0f172a] text-slate-300 rounded p-3 font-mono text-[9px] space-y-1 leading-normal border border-[#1e293b]">
-                  <div className="truncate">
-                    <strong className="text-slate-500">REGISTRY HASH:</strong> {onChainState?.hash}
-                  </div>
-                  <div>
-                    <strong className="text-slate-500">MÉDICO FIRMANTE:</strong> {onChainState?.doctor}
-                  </div>
-                  {onChainState?.timestamp ? (
-                    <div className="flex items-center gap-1">
-                      <Clock size={11} className="text-slate-500" />
-                      <strong className="text-slate-500">FECHA REGISTRO:</strong>{' '}
-                      <span>{new Date(onChainState.timestamp * 1000).toLocaleString()}</span>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-
-              {successMsg && (
-                <div className="flex gap-2 p-3 rounded bg-emerald-50 border border-emerald-250 text-[10px] text-emerald-800 font-medium">
-                  <span>{successMsg}</span>
-                </div>
-              )}
-
-              {/* Action: Redeem Button */}
-              {onChainState?.isValid && !onChainState?.isRedeemed && (
-                <div className="border-t border-slate-200 pt-4 flex justify-end">
-                  <button
-                    onClick={handleRedeem}
-                    disabled={redeeming}
-                    className="ehr-btn-primary w-full py-2.5"
-                  >
-                    {redeeming ? (
-                      <span>Registrando despacho clínico...</span>
-                    ) : (
-                      <span>Registrar Despacho de Medicamentos</span>
-                    )}
-                  </button>
-                </div>
-              )}
-
             </div>
-          ) : (
-            <div className="bg-white border border-slate-250 rounded p-8 text-center flex flex-col items-center justify-center">
-              <Pill size={24} className="text-slate-350 mb-3" />
-              <h4 className="text-[10px] font-bold text-slate-800 uppercase tracking-wider mb-1">
-                Esperando Búsqueda de Receta
-              </h4>
-              <p className="text-[10px] text-slate-500 max-w-xs leading-normal">
-                Ingrese el Hash criptográfico completo de la receta en el panel de búsqueda, o consulte por el ID de paciente para ver sus prescripciones autorizadas.
-              </p>
-            </div>
-          )}
+          </div>
+
         </div>
+      )}
 
-      </div>
     </div>
+  );
+}
+
+export default function PharmacyPortal() {
+  return (
+    <Suspense fallback={<div className="text-center py-12 text-xs text-slate-400">Loading verified portal...</div>}>
+      <PharmacyPortalContent />
+    </Suspense>
   );
 }
