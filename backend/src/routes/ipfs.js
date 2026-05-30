@@ -208,4 +208,85 @@ router.get('/fetch/:cid', async (req, res, next) => {
   }
 });
 
+// ─── POST /upload-record ────────────────────────────────────────────────────────
+/**
+ * Accepts a JSON body with clinical history or general record data.
+ * Encrypts sensitive fields specified in the body (or defaults) before uploading to Pinata.
+ *
+ * Request body shape:
+ * {
+ *   data: { ... },
+ *   sensitiveFields: ["diagnosis", "notes", "patientName"] // optional
+ * }
+ */
+router.post('/upload-record', async (req, res, next) => {
+  try {
+    const encryptionKey = process.env.ENCRYPTION_KEY;
+    if (!encryptionKey) {
+      return res.status(500).json({
+        status: 500,
+        message: 'ENCRYPTION_KEY is not configured on the server.',
+      });
+    }
+
+    const { data, sensitiveFields } = req.body;
+
+    if (!data || Object.keys(data).length === 0) {
+      return res.status(400).json({
+        status: 400,
+        message: 'Request body must contain a "data" object.',
+      });
+    }
+
+    const defaultSensitiveFields = ['patientName', 'dob', 'notes', 'diagnosis', 'treatment', 'allergies', 'medications'];
+    const fieldsToEncrypt = Array.isArray(sensitiveFields) ? sensitiveFields : defaultSensitiveFields;
+
+    // Build the payload – encrypt sensitive fields, keep the rest as-is
+    const encryptedPayload = { ...data };
+    for (const field of fieldsToEncrypt) {
+      if (encryptedPayload[field] !== undefined && encryptedPayload[field] !== null) {
+        encryptedPayload[field] = encrypt(String(encryptedPayload[field]), encryptionKey);
+      }
+    }
+
+    // Mark the record so consumers know which fields are encrypted
+    encryptedPayload._encryptedFields = fieldsToEncrypt;
+    encryptedPayload._version = '1.0';
+    encryptedPayload._uploadedAt = new Date().toISOString();
+
+    // Upload to Pinata
+    const pinataPayload = {
+      pinataContent: encryptedPayload,
+      pinataMetadata: {
+        name: `record-${data.patientAddress || 'unknown'}-${Date.now()}`,
+        keyvalues: {
+          patientAddress: data.patientAddress || '',
+          addedBy: data.addedBy || '',
+          recordType: data.recordType || '',
+        },
+      },
+      pinataOptions: {
+        cidVersion: 1,
+      },
+    };
+
+    const response = await axios.post(
+      'https://api.pinata.cloud/pinning/pinJSONToIPFS',
+      pinataPayload,
+      { headers: getPinataHeaders() }
+    );
+
+    const cid = response.data.IpfsHash;
+
+    return res.status(201).json({
+      status: 201,
+      message: 'Record uploaded to IPFS successfully.',
+      cid,
+      ipfsUrl: `https://gateway.pinata.cloud/ipfs/${cid}`,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

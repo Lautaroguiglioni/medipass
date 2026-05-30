@@ -10,6 +10,7 @@ const rateLimit = require('express-rate-limit');
 const ipfsRoutes = require('./routes/ipfs');
 const prescriptionRoutes = require('./routes/prescriptions');
 const rolesRoutes = require('./routes/roles');
+const historyRoutes = require('./routes/history');
 const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
@@ -60,6 +61,7 @@ app.get('/api/health', (req, res) => {
 app.use('/api/ipfs', ipfsRoutes);
 app.use('/api/prescriptions', prescriptionRoutes);
 app.use('/api/roles', rolesRoutes);
+app.use('/api/history', historyRoutes);
 
 // ─── 404 Handler ────────────────────────────────────────────────────────────────
 app.use((req, res) => {
