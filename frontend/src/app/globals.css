@@ -1,0 +1,163 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f8fafc; /* Institutional Grey-White */
+  --foreground: #1e293b; /* Dark Slate Text */
+  
+  --clinical-blue: #1e40af; /* Primary Institutional Blue (Epic-style) */
+  --clinical-blue-hover: #1d4ed8;
+  --clinical-border: #cbd5e1; /* Clean grey dividers */
+  --clinical-bg-light: #f1f5f9; /* Hospital table row highlights */
+  
+  --state-active-bg: #dcfce7; /* Soft Green */
+  --state-active-text: #166534;
+  --state-redeemed-bg: #f1f5f9; /* Soft Grey */
+  --state-redeemed-text: #475569;
+  --state-error-bg: #fee2e2; /* Soft Red */
+  --state-error-text: #991b1b;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-clinblue: var(--clinical-blue);
+  --color-clinblue-hover: var(--clinical-blue-hover);
+  --color-clinborder: var(--clinical-border);
+  --color-clinlight: var(--clinical-bg-light);
+  --font-sans: var(--font-sans), system-ui, sans-serif;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  min-height: 100vh;
+  overflow-x: hidden;
+  font-family: var(--font-sans);
+}
+
+/* High-Density EHR Table System */
+.ehr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  background-color: #ffffff;
+}
+
+.ehr-table th {
+  background-color: #f1f5f9;
+  color: #334155;
+  font-weight: 700;
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 2px solid #cbd5e1;
+  border-right: 1px solid #e2e8f0;
+}
+
+.ehr-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #cbd5e1;
+  border-right: 1px solid #e2e8f0;
+  color: #334155;
+  vertical-align: middle;
+}
+
+.ehr-table tr:hover {
+  background-color: #f8fafc;
+}
+
+.ehr-table tr:nth-child(even) {
+  background-color: #f8fafc/50;
+}
+
+/* Clinical Form Inputs */
+.ehr-input {
+  width: 100%;
+  font-size: 0.75rem;
+  padding: 6px 10px;
+  background-color: #ffffff;
+  border: 1px solid #94a3b8;
+  border-radius: 4px;
+  color: #1e293b;
+  outline: none;
+  transition: border-color 0.15s ease-in-out;
+}
+
+.ehr-input:focus {
+  border-color: #1e40af;
+  box-shadow: 0 0 0 1px rgba(30, 64, 175, 0.15);
+}
+
+/* Institutional Flat Buttons */
+.ehr-btn-primary {
+  background-color: #1e40af;
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 0.75rem;
+  padding: 6px 12px;
+  border: 1px solid #1e3a8a;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s ease-in-out;
+}
+
+.ehr-btn-primary:hover:not(:disabled) {
+  background-color: #1d4ed8;
+}
+
+.ehr-btn-primary:disabled {
+  background-color: #94a3b8;
+  border-color: #64748b;
+  cursor: not-allowed;
+}
+
+.ehr-btn-secondary {
+  background-color: #ffffff;
+  color: #334155;
+  font-weight: 600;
+  font-size: 0.75rem;
+  padding: 6px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s ease-in-out;
+}
+
+.ehr-btn-secondary:hover {
+  background-color: #f1f5f9;
+}
+
+/* Status Badges */
+.ehr-badge-active {
+  background-color: var(--state-active-bg);
+  color: var(--state-active-text);
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-weight: 700;
+  font-size: 0.7rem;
+  display: inline-block;
+  border: 1px solid rgba(22, 101, 52, 0.15);
+}
+
+.ehr-badge-redeemed {
+  background-color: var(--state-redeemed-bg);
+  color: var(--state-redeemed-text);
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-weight: 700;
+  font-size: 0.7rem;
+  display: inline-block;
+  border: 1px solid rgba(71, 85, 105, 0.15);
+}
+
+.ehr-badge-error {
+  background-color: var(--state-error-bg);
+  color: var(--state-error-text);
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-weight: 700;
+  font-size: 0.7rem;
+  display: inline-block;
+  border: 1px solid rgba(153, 27, 27, 0.15);
+}
+
+
